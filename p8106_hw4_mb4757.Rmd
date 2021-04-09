@@ -1,0 +1,291 @@
+---
+title: "P8106 HW 4" 
+author: "Minjie Bao"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+--- 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+\newpage
+
+```{r}
+library(ISLR)
+library(lasso2)
+library(tidyverse)
+library(caret)
+library(mlbench)
+library(rpart)
+library(rpart.plot)
+library(party)
+library(partykit)
+library(randomForest)
+library(gbm)
+library(plotmo)
+library(pdp)
+library(lime)
+library(ranger)
+
+set.seed(2021)
+```
+
+# Problem 1
+
+### (a) Fit a regression tree with lpsa as the response and the other variables as predictors. Use cross-validation to determine the optimal tree size. Which tree size corresponds to the lowest cross-validation error? Is this the same as the tree size obtained using the 1 SE rule?
+
+```{r}
+data(Prostate)
+#head(Prostate)
+
+ctrl = trainControl(method = "cv")
+
+# minimum cross-validation error
+set.seed(2021)
+tree.fit = train(lpsa~., 
+            data = Prostate,
+            method = "rpart",
+            tuneGrid = data.frame(cp =exp(seq(-8, -3, length = 20))),
+            trControl = ctrl)
+ggplot(tree.fit, highlight = TRUE)
+
+tree.fit$finalModel$cptable
+rpart.plot(tree.fit$finalModel)
+
+
+#1 SE rule
+set.seed(2021)
+tree.fit2 = train(lpsa~., 
+            data = Prostate,
+            method = "rpart",
+            tuneGrid = data.frame(cp =exp(seq(-8,-2, length = 20))),
+            trControl = trainControl(method = "cv",
+                                     number = 10,
+                                     selectionFunction = "oneSE"))
+ggplot(tree.fit2, highlight = TRUE)
+
+tree.fit2$finalModel$cptable
+rpart.plot(tree.fit2$finalModel)
+```
+
+The optimal tree size corresponds to the lowest cross validation error is 8. However, the optimal tree size obtained using the 1 SE rule is 3. Therefore, these two methods' optimal tree sizes are different.
+
+### (b) Create a plot of the final tree you choose. Pick one of the terminal nodes, and interpret the information displayed.
+
+```{r}
+set.seed(2021)
+final_tree <- rpart(lpsa~., data = Prostate, 
+               control = rpart.control(cp = 0.1))
+
+rpart.plot(final_tree)
+```
+
+I choose the final model with cp = 0.1 and tree size = 3.
+
+Interpretation: From the tree plot, we can see that in the terminal node where log cancer volumn(lcavol) < 2.5, there is 78% chance for log prostate specific antigen to be 2.1. If the log cancer volumn((lcavol)) is not < 2.5, there is 22% chance for log prostate specific antigen to be 3.8.
+
+
+### (c) Perform bagging and report the variable importance.
+
+```{r}
+set.seed(1)
+ctrl <- trainControl(method = "cv")
+
+bag.grid <- expand.grid(mtry = 8,
+                       splitrule = "variance",
+                       min.node.size = 1:30)
+
+bag.fit <- train(lpsa~., Prostate, 
+                method = "ranger",
+                tuneGrid = bag.grid,
+                trControl = ctrl,
+                importance = 'impurity')
+
+ggplot(bag.fit, highlight = TRUE)
+
+barplot(sort(ranger::importance(bag.fit$finalModel), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("darkred","white","darkblue"))(19))
+
+```
+
+The importance of variables from highest to lowest using bagging method is: lcavol, lweight, svi, pgg45, lcp, age, lbph, and gleason.
+
+
+
+### (d) Perform random forest and report the variable importance.
+
+```{r}
+rf.grid <- expand.grid(mtry = 1:6,
+                       splitrule = "variance",
+                       min.node.size = 1:30)
+
+set.seed(2021)
+rf.fit <- train(lpsa~., Prostate, 
+                method = "ranger",
+                tuneGrid = rf.grid,
+                trControl = ctrl,
+                importance = 'impurity')
+ggplot(rf.fit, highlight = TRUE)
+
+
+barplot(sort(ranger::importance(rf.fit$finalModel), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("darkred","white","darkblue"))(19))
+```
+
+The importance of variables using the random forest method from highest to lowest is: lcavol, lweight, svi, lcp, pgg45, age, lbph, and gleason.
+
+
+### (e) Perform boosting and report the variable importance.
+
+```{r}
+gbm.grid <- expand.grid(n.trees = c(2000, 3000, 5000),
+                        interaction.depth = 1:10,
+                        shrinkage = c(0.001,0.003,0.005),
+                        n.minobsinnode = 1)
+
+set.seed(2021)
+gbm.fit <- train(lpsa~., Prostate, 
+                 method = "gbm",
+                 tuneGrid = gbm.grid,
+                 trControl = ctrl,
+                 verbose = FALSE)
+
+ggplot(gbm.fit, highlight = TRUE)
+summary(gbm.fit$finalModel, las = 2, cBars = 19, cex.names = 0.6)
+```
+
+The importance of variables from highest to lowest using the GBM method is: lcavol, lweight, svi, lcp, pgg45, age, gleason, and lbph.
+
+### (f) Which of the above models will you select to predict PSA level?
+
+```{r}
+resample = resamples(
+  list(
+  RegressionTreeMinErr = tree.fit,
+  RegressionTree1SE = tree.fit2,
+  bagging = bag.fit, 
+  random_forest = rf.fit, 
+  boosting = gbm.fit
+  ))
+summary(resample)
+
+
+bwplot(resample, metric = "Rsquared")
+bwplot(resample, metric = "RMSE")
+
+```
+
+From the boxplot of Rsquared, we can see that random forest has the largest Rsquared, and decision tree using 1 SE rule has the smallest Rsquared. From the boxplot of RMSE, boosting has the smallest mean of RMSE, and decision tree using 1 SE rule has the largest mean of RMSE. I will choose the boosting method to predict PSA level since it has the smallest RMSE and large Rsquared.
+
+
+# Problem 2
+
+
+### (a) Fit a classification tree to the training set, with Purchase as the response and the other variables as predictors. Use cross-validation to determine the tree size and create a plot of the final tree. Predict the response on the test data. What is the test classification error rate?
+
+```{r}
+data("OJ")
+#head(OJ)
+
+set.seed(1)
+rowTrain = createDataPartition(y = OJ$Purchase, p = 0.747, list = FALSE)
+
+trainData = OJ[rowTrain, ]
+testData = OJ[-rowTrain, ]
+
+dim(trainData)
+dim(testData)
+
+
+set.seed(1)
+ctrl2 <- trainControl(method = "repeatedcv", summaryFunction = twoClassSummary, classProbs = TRUE)
+rpart.fit_oj <- train(Purchase~.,
+                      data = trainData,
+                      method = "rpart",
+                      tuneGrid = data.frame(cp = exp(seq(-8,-4, len = 20))),
+                      trControl = ctrl2,
+                      metric = "ROC")
+
+ggplot(rpart.fit_oj, highlight = TRUE)
+
+rpart.fit_oj$finalModel$cptable
+rpart.plot(rpart.fit_oj$finalModel)
+
+rpart.pred <- predict(rpart.fit_oj, newdata = testData)
+error.rate <- 1 - mean(testData$Purchase == rpart.pred); error.rate
+
+```
+
+The tree size is 15 and test error rate is 0.1889.
+
+### (b) Perform random forest on the training set and report variable importance. What is the test error rate?
+
+```{r}
+rf.grid2 <- expand.grid(mtry = 1:6,
+                       splitrule = "gini",
+                       min.node.size = seq(from = 20, to = 100, by = 5))
+set.seed(1)
+rf.fit_oj <- train(Purchase~.,
+                data = trainData,
+                method = "ranger",
+                tuneGrid = rf.grid2,
+                metric = "ROC",
+                trControl = ctrl2,
+                importance = "impurity")
+ggplot(rf.fit_oj,highlight = TRUE)
+
+
+barplot(sort(ranger::importance(rf.fit_oj$finalModel),decreasing = FALSE),
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(19))
+
+
+rf.pred2 <- predict(rf.fit_oj, newdata = testData, type = "raw")
+error.rate2 <- 1 - mean(testData$Purchase == rf.pred2); error.rate2
+
+```
+From the importance barplot, we can see that the top 3 most important variables are: LoyalCH > PriceDiff > StoreID. The least important variable is SpecialMM. The test error rate is 0.1704.
+
+
+### (c) Perform boosting on the training set and report variable importance. What is the test error rate?
+
+```{r}
+boost.grid2 <- expand.grid(n.trees = c(2000,3000,4000),
+                        interaction.depth = 1:10,
+                        shrinkage = c(0.001,0.003,0.005),
+                        n.minobsinnode = 1)
+
+set.seed(1)
+boost.fit_oj <- train(Purchase~.,
+                 data = trainData,
+                 tuneGrid = boost.grid2,
+                 trControl = ctrl2,
+                 method = "gbm",
+                 distribution = "adaboost",
+                 metric = "ROC",
+                 verbose = FALSE)
+
+ggplot(boost.fit_oj, highlight = TRUE)
+summary(boost.fit_oj$finalModel, las = 2, cBars = 19, cex.names = 0.6)
+
+boost.pred2 <- predict(boost.fit_oj, newdata = testData)
+error.rate3 <- 1 - mean(testData$Purchase == boost.pred2); error.rate3
+```
+
+From the importance barplot, we can see that the top 3 most important variables are: LoyalCH >PriceDiff > SalePriceMM. The least important variable is SpecialCH. The test error rate is 0.1852.
